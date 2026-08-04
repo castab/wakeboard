@@ -59,6 +59,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 This runs `npm ci`, TypeScript compilation, the Vite production build, `dotnet test`, and the self-contained Windows publish. The expected artifact is `artifacts\win-x64\Wakeboard.exe`.
 
+Pass `-Version <semantic-version>` to stamp a release version. It flows to the UI as the `VITE_WAKEBOARD_VERSION` Docker build argument and to `dotnet publish` as `/p:Version`, so the UI footer and the executable metadata always report the same build. Omitting it yields `dev` in the footer and `0.0.0` in the executable. CI derives the value from the pushed `vX.Y.Z` tag; do not hard-code a version in source.
+
 For focused UI work with Node 24 available:
 
 ```powershell
