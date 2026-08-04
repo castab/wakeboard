@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
   pull_request:
   workflow_dispatch:
 
@@ -24,11 +26,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Run tests and build executable
+      - name: Determine build mode
+        id: release
+        shell: pwsh
+        run: |
+          $semanticVersionTag = '^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          $isRelease = $env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -match $semanticVersionTag
+          "is_release=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Run dry-run build and tests
+        if: steps.release.outputs.is_release != 'true'
+        run: docker build --file build/Dockerfile --target test .
+
+      - name: Run tests and build release executable
+        if: steps.release.outputs.is_release == 'true'
         shell: pwsh
         run: ./scripts/build.ps1 -Output artifacts/win-x64
 
       - name: Verify executable
+        if: steps.release.outputs.is_release == 'true'
         shell: pwsh
         run: |
           $executable = Join-Path $PWD "artifacts/win-x64/Wakeboard.exe"
@@ -37,7 +53,8 @@ jobs:
           }
           Write-Host "Verified $executable ($((Get-Item -LiteralPath $executable).Length) bytes)"
 
-      - name: Upload Windows executable
+      - name: Upload Windows executable for tagged release
+        if: steps.release.outputs.is_release == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: Wakeboard-win-x64
