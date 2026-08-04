@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Reflection;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.AspNetCore.HttpOverrides;
 
 namespace Wakeboard;
 
@@ -27,10 +29,19 @@ public static class Program
         builder.Services.AddSingleton<AuthService>();
         builder.Services.AddSingleton<ConfigStore>();
         builder.Services.AddSingleton<NetworkService>();
+        builder.Services.Configure<ForwardedHeadersOptions>(options =>
+        {
+            options.ForwardedHeaders = ForwardedHeaders.XForwardedHost | ForwardedHeaders.XForwardedProto;
+            options.KnownProxies.Clear();
+            options.KnownIPNetworks.Clear();
+            options.KnownProxies.Add(IPAddress.Loopback);
+            options.KnownProxies.Add(IPAddress.IPv6Loopback);
+        });
 
         var app = builder.Build();
         var attempts = new ConcurrentDictionary<string, List<DateTimeOffset>>();
 
+        app.UseForwardedHeaders();
         app.Use(async (context, next) =>
         {
             if (!context.Request.Path.StartsWithSegments("/api")) { await next(); return; }

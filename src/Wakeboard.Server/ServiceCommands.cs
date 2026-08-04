@@ -32,7 +32,7 @@ public static class ServiceCommands
 
     private static int Install(string[] args, AppPaths paths)
     {
-        var port = ReadPort(args, 3001);
+        var port = ReadPort(args, 3000);
         StopAndDeleteService();
         var conflict = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().FirstOrDefault(endpoint => endpoint.Port == port);
         if (conflict is not null) throw new InvalidOperationException($"TCP port {port} is already in use. Choose another with --port <number>.");

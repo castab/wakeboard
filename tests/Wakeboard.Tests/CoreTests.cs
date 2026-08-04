@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Http;
 using Wakeboard;
 using Xunit;
 
@@ -12,7 +13,8 @@ public sealed class CoreTests : IDisposable
     [Fact]
     public void PasswordHashAndSessionAreAuthenticated()
     {
-        var settings = new AppSettings { PasswordHash = SettingsStore.HashPassword("correct horse", 100_000), SessionSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)), Port = 3001 };
+        var settings = new AppSettings { PasswordHash = SettingsStore.HashPassword("correct horse", 100_000), SessionSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)) };
+        Assert.Equal(3000, settings.Port);
         Assert.True(SettingsStore.VerifyPassword("correct horse", settings.PasswordHash));
         Assert.False(SettingsStore.VerifyPassword("wrong", settings.PasswordHash));
         var auth = new AuthService(settings);
@@ -21,6 +23,20 @@ public sealed class CoreTests : IDisposable
         Assert.True(auth.VerifySession(token, now.AddMinutes(1)));
         Assert.False(auth.VerifySession(token + "x", now.AddMinutes(1)));
         Assert.False(auth.VerifySession(token, now.AddHours(13)));
+    }
+
+    [Fact]
+    public void OriginValidationSupportsAnHttpsProxyHostname()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Scheme = "https";
+        context.Request.Host = new HostString("wakeboard.example.ts.net");
+        context.Request.Headers.Origin = "https://wakeboard.example.ts.net";
+
+        Assert.True(AuthService.HasValidOrigin(context.Request));
+
+        context.Request.Headers.Origin = "https://attacker.example";
+        Assert.False(AuthService.HasValidOrigin(context.Request));
     }
 
     [Theory]
