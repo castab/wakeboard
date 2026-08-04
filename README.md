@@ -1,6 +1,6 @@
 # Wakeboard
 
-Wakeboard is a native Windows Wake-on-LAN dashboard packaged as one self-contained `Wakeboard.exe`. The executable contains the web UI, HTTP server, authentication, host storage, Windows adapter discovery, ICMP status checks, and UDP magic-packet sender. Docker and a separately installed .NET runtime are not required to run it.
+Wakeboard is a native Windows Wake-on-LAN dashboard packaged as one self-contained `Wakeboard.exe`. The executable contains the web UI, HTTP server, authentication, host storage, Windows adapter discovery, ICMP status checks, and UDP magic-packet sender.
 
 Saved devices can include a hostname or IPv4 address for a liveliness check. **Awake** means that target replied to ICMP. **No ping response** is deliberately inconclusive: a running computer can block ping through its firewall or network policy.
 
