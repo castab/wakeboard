@@ -20,7 +20,36 @@ An **Awake** status means the target replied to ICMP. **No ping response** is in
 - An IPv4 network path that permits broadcasts between the Wakeboard computer and target devices
 - A trusted private LAN; Wakeboard is not intended for direct internet exposure
 
-The locally built executable is not code-signed, so Windows may display a reputation or SmartScreen warning.
+Wakeboard.exe is not code-signed, whether it is downloaded from a release or built locally, so Windows may display a reputation or SmartScreen warning the first time it runs.
+
+## Download
+
+Every tagged release publishes a ready-to-run `Wakeboard.exe`, so the fastest way to get started is to download it. No GitHub account, Docker installation, or build tooling is required. The single file contains everything: the web interface, the HTTP server, and the service commands.
+
+1. Open the releases page at `https://github.com/castab/wakeboard/releases`.
+2. Select the latest release at the top of the list.
+3. Under **Assets**, download `Wakeboard.exe (win-x64)`. The saved file is named `Wakeboard.exe`.
+4. Move the file somewhere convenient, such as `Downloads` or `Desktop`. The location does not matter, because installation copies the executable into `%ProgramData%\Wakeboard\bin`.
+
+Windows marks files downloaded from the internet, which can make the executable refuse to run or show a warning. Clear the mark from PowerShell in the folder holding the download:
+
+```powershell
+Unblock-File .\Wakeboard.exe
+```
+
+If SmartScreen still shows a **Windows protected your PC** message, select **More info** and then **Run anyway**. This appears because the executable is not code-signed, not because anything is wrong with the download.
+
+Continue with the Install section below to set Wakeboard up as a Windows service. The install commands there are written as `.\artifacts\win-x64\Wakeboard.exe` because they assume a local build. When running the downloaded copy, open PowerShell in the folder containing it and use `.\Wakeboard.exe` instead:
+
+```powershell
+.\Wakeboard.exe install
+```
+
+Releases whose tag carries a prerelease suffix, such as `v1.2.3-beta.1`, are labeled as prereleases on the releases page. Prefer the latest normal release unless a prerelease fix is specifically needed.
+
+To upgrade later, download the newer release, open PowerShell in the folder containing the new file, and run `.\Wakeboard.exe update`. The update must be run from the new external copy because the installed copy cannot replace itself. Settings, the shared password, and saved hosts are preserved. See Service commands for the full list.
+
+Each CI run for a tag also uploads the same executable as a `Wakeboard-win-x64-vX.Y.Z` workflow artifact. That route requires a GitHub login, so the releases page is the recommended download.
 
 ## Build
 
@@ -43,7 +72,7 @@ The output directory is replaced on each build. Use `-Output <relative-path>` to
 
 Use `-Version <semantic-version>` to stamp a version into the build, for example `.\scripts\build.ps1 -Version 0.0.3`. The value is shown in the footer of every page in the web UI and written to the executable's file and product version metadata. Builds without `-Version` report `dev` in the footer and `0.0.0` in the executable metadata.
 
-Tagged releases are versioned automatically. Pushing a `vX.Y.Z` tag makes CI run `scripts/build.ps1` with that version, upload the executable as the `Wakeboard-win-x64-vX.Y.Z` workflow artifact, and publish a GitHub release for the tag with `Wakeboard.exe` attached. Tags carrying a prerelease suffix such as `v1.2.3-beta.1` are marked as prereleases. Downloading the executable from the releases page therefore does not require a GitHub login, unlike workflow artifacts.
+Tagged releases are versioned automatically. Pushing a `vX.Y.Z` tag makes CI run `scripts/build.ps1` with that version, upload the executable as the `Wakeboard-win-x64-vX.Y.Z` workflow artifact, and publish a GitHub release for the tag with `Wakeboard.exe` attached. Tags carrying a prerelease suffix such as `v1.2.3-beta.1` are marked as prereleases. The Download section covers retrieving those published executables.
 
 ## Install
 
@@ -73,13 +102,55 @@ If the port is occupied, stop the process using it or choose another port. Other
 
 ### Tailscale Serve HTTPS
 
-Wakeboard supports HTTPS termination through Tailscale Serve while keeping the backend on local HTTP. On the Wakeboard computer, run:
+Wakeboard supports HTTPS termination through Tailscale Serve while keeping the backend on local HTTP. This is the recommended way to reach the dashboard from outside the LAN: Tailscale provides the encrypted connection and the device authentication, and Wakeboard itself never has to be exposed to the internet.
+
+Before starting, on the Wakeboard computer:
+
+1. Install Tailscale and sign in to the tailnet.
+2. Enable MagicDNS and HTTPS certificates for the tailnet in the Tailscale admin console. `tailscale serve` cannot obtain a certificate without them.
+3. Confirm Wakeboard is installed and reachable at `http://localhost:<port>`.
+
+Then start the proxy:
 
 ```powershell
 tailscale serve --bg 3000
 ```
 
-Open the `https://<computer>.<tailnet>.ts.net` URL reported by Tailscale. Wakeboard accepts Tailscale's forwarded HTTPS scheme and hostname only when the proxy connection comes from the local machine; forwarded headers from LAN clients are ignored. The UI and API remain same-origin, so CORS does not need to be enabled.
+Replace `3000` with the port chosen during installation if `--port` was used. Tailscale listens on HTTPS port 443 for the machine and forwards to Wakeboard over loopback, so the Wakeboard service stays on plain local HTTP.
+
+Confirm the mapping and read back the public URL:
+
+```powershell
+tailscale serve status
+```
+
+Open the `https://<computer>.<tailnet>.ts.net` URL it reports. Only devices signed in to the same tailnet can reach it, and tailnet ACLs in the Tailscale admin console can narrow that further to specific devices or users.
+
+Wakeboard accepts Tailscale's forwarded HTTPS scheme and hostname only when the proxy connection comes from the local machine; forwarded headers from LAN clients are ignored. The UI and API remain same-origin, so CORS does not need to be enabled. Because the browser connection is HTTPS, the shared password and the session cookie are encrypted in transit and the cookie is issued with the `Secure` attribute, neither of which is true over plain HTTP.
+
+To stop serving:
+
+```powershell
+tailscale serve --bg --https=443 off
+```
+
+Do not use `tailscale funnel`. Funnel publishes the same URL to the public internet, which contradicts the requirement that Wakeboard run only on a trusted private network.
+
+#### Restricting access to the tailnet
+
+Tailscale Serve does not by itself close the plain-HTTP path. The installer's `Wakeboard web interface` firewall rule still allows any device on the Private-profile LAN to reach `http://<computer>:<port>` without encryption. To make the tailnet the only way in, disable that rule from an elevated PowerShell prompt:
+
+```powershell
+Set-NetFirewallRule -DisplayName "Wakeboard web interface" -Enabled False
+```
+
+After disabling it:
+
+- The `https://<computer>.<tailnet>.ts.net` URL keeps working, because Tailscale Serve connects to Wakeboard over loopback rather than through the firewall.
+- `http://localhost:<port>` on the Wakeboard computer itself keeps working.
+- `http://<computer>:<port>` from other LAN computers stops working. Those devices must join the tailnet and use the HTTPS URL.
+
+Re-enable LAN access at any time with `-Enabled True`. Note that running `install` again recreates and re-enables the rule, so repeat this step after a reinstall or a password reset. Running `update` does not touch the firewall rule.
 
 ### Existing data and password resets
 
@@ -155,6 +226,9 @@ DNS problems, host firewalls, endpoint security, sleeping network adapters, and 
 - **Packets send but the device stays off:** verify firmware and adapter WoL settings, the target MAC address, and that the chosen adapter shares the target's broadcast domain.
 - **Broadcasts are missing:** allow outbound UDP/9 from the installed executable and check for VPNs, VLAN boundaries, Wi-Fi client isolation, or network equipment that suppresses directed broadcasts.
 - **A saved adapter is unavailable:** edit the device and select its current Windows adapter.
+- **Windows blocks the downloaded executable:** run `Unblock-File .\Wakeboard.exe`, then select **More info** and **Run anyway** if SmartScreen still prompts.
+- **`tailscale serve` reports no certificate:** enable MagicDNS and HTTPS certificates for the tailnet in the Tailscale admin console, then run the command again.
+- **The tailnet URL works but LAN clients cannot connect:** confirm whether the `Wakeboard web interface` firewall rule was disabled to restrict access to the tailnet, and re-enable it with `Set-NetFirewallRule -DisplayName "Wakeboard web interface" -Enabled True` if LAN access is still wanted.
 - **Configuration errors appear:** inspect `%ProgramData%\Wakeboard\data\config.json`; Wakeboard intentionally leaves malformed data untouched so it can be repaired or restored.
 
 ## Repository layout
