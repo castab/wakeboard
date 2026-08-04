@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+node_modules
+ui/node_modules
+ui/dist
+artifacts
+data
+src/**/bin
+src/**/obj
+tests/**/bin
+tests/**/obj
