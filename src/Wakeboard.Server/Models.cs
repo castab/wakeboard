@@ -28,5 +28,5 @@ public sealed class AppSettings
 {
     public required string PasswordHash { get; set; }
     public required string SessionSecret { get; set; }
-    public int Port { get; set; } = 3001;
+    public int Port { get; set; } = 3000;
 }

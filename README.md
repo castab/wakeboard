@@ -59,13 +59,23 @@ The executable requests administrator elevation and then:
 6. Adds the `Wakeboard web interface` inbound firewall rule for Private network profiles.
 7. Starts the service.
 
-The default dashboard URL is `http://localhost:3001`. To select another port:
+The default dashboard URL is `http://localhost:3000`. To select another port:
 
 ```powershell
 .\artifacts\win-x64\Wakeboard.exe install --port 8080
 ```
 
 If the port is occupied, stop the process using it or choose another port. Other computers on the LAN can use `http://<wakeboard-computer-name>:<port>`. If Windows classifies the LAN as Public, change it to Private or deliberately adjust the firewall rule.
+
+### Tailscale Serve HTTPS
+
+Wakeboard supports HTTPS termination through Tailscale Serve while keeping the backend on local HTTP. On the Wakeboard computer, run:
+
+```powershell
+tailscale serve --bg 3000
+```
+
+Open the `https://<computer>.<tailnet>.ts.net` URL reported by Tailscale. Wakeboard accepts Tailscale's forwarded HTTPS scheme and hostname only when the proxy connection comes from the local machine; forwarded headers from LAN clients are ignored. The UI and API remain same-origin, so CORS does not need to be enabled.
 
 ### Existing data and password resets
 
