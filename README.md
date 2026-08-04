@@ -41,6 +41,10 @@ artifacts\win-x64\Wakeboard.exe
 
 The output directory is replaced on each build. Use `-Output <relative-path>` to select a different directory inside the repository.
 
+Use `-Version <semantic-version>` to stamp a version into the build, for example `.\scripts\build.ps1 -Version 0.0.3`. The value is shown in the footer of every page in the web UI and written to the executable's file and product version metadata. Builds without `-Version` report `dev` in the footer and `0.0.0` in the executable metadata.
+
+Tagged releases are versioned automatically: pushing a `vX.Y.Z` tag makes CI run `scripts/build.ps1` with that version and upload the executable as the `Wakeboard-win-x64-vX.Y.Z` workflow artifact.
+
 ## Install
 
 Run the built executable:

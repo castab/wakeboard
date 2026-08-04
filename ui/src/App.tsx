@@ -8,6 +8,15 @@ interface WakeResult { packetsSent: number }
 interface Draft { name: string; macAddress: string; preferredInterfaceId: string; checkTarget: string }
 type HostStatus = { state: "checking" | "reachable" | "unreachable" | "error"; result?: LivenessResult; error?: string };
 const blankDraft: Draft = { name: "", macAddress: "", preferredInterfaceId: "", checkTarget: "" };
+const appVersion = import.meta.env.VITE_WAKEBOARD_VERSION || "dev";
+const repositoryUrl = "https://github.com/castab/wakeboard";
+
+function AppFooter() {
+  return <footer>{appVersion === "dev" ? "dev" : `v${appVersion}`} ·
+    <a href={repositoryUrl} target="_blank" rel="noreferrer noopener" title="Wakeboard on GitHub" aria-label="Wakeboard on GitHub">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z" /></svg>
+    </a></footer>;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
@@ -31,7 +40,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
     <form onSubmit={submit} className="login-form"><label htmlFor="password">Shared password</label>
       <input id="password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required autoFocus />
       {error && <p className="form-error" role="alert">{error}</p>}<button className="button primary wide" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-    </form></section></main>;
+    </form></section><AppFooter /></main>;
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
@@ -124,13 +133,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           <div className="card-actions"><button onClick={() => beginEdit(host)}>Edit</button><button className="danger-link" onClick={() => void removeHost(host)} disabled={busyKey === `delete:${host.id}`}>Remove</button></div>
         </article>;
       })}</div>}
-    </section><footer>Native Windows networking · No Docker required</footer>
+    </section><AppFooter />
   </main>;
 }
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   useEffect(() => { void request<{ authenticated: boolean }>("/api/auth/session").then(result => setAuthenticated(result.authenticated)).catch(() => setAuthenticated(false)); }, []);
-  if (authenticated === null) return <main className="splash"><div className="brand-mark">⌁</div><span>Loading Wakeboard…</span></main>;
+  if (authenticated === null) return <main className="splash"><div className="splash-body"><div className="brand-mark">⌁</div><span>Loading Wakeboard…</span></div><AppFooter /></main>;
   return authenticated ? <Dashboard onLogout={() => setAuthenticated(false)} /> : <Login onLogin={() => setAuthenticated(true)} />;
 }
