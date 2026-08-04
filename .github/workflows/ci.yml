@@ -22,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    permissions:
+      contents: write
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -63,3 +66,24 @@ jobs:
           name: Wakeboard-win-x64-v${{ steps.release.outputs.version }}
           path: artifacts/win-x64/Wakeboard.exe
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: steps.release.outputs.is_release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $asset = "artifacts/win-x64/Wakeboard.exe"
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $env:TAG already exists; replacing the executable."
+            gh release upload $env:TAG "$asset#Wakeboard.exe (win-x64)" --clobber
+          } else {
+            $arguments = @('release', 'create', $env:TAG, "$asset#Wakeboard.exe (win-x64)", '--title', "Wakeboard $env:TAG", '--generate-notes')
+            if ($env:VERSION -match '-') { $arguments += '--prerelease' }
+            gh @arguments
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to publish release $env:TAG." }
