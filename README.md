@@ -43,7 +43,7 @@ The output directory is replaced on each build. Use `-Output <relative-path>` to
 
 Use `-Version <semantic-version>` to stamp a version into the build, for example `.\scripts\build.ps1 -Version 0.0.3`. The value is shown in the footer of every page in the web UI and written to the executable's file and product version metadata. Builds without `-Version` report `dev` in the footer and `0.0.0` in the executable metadata.
 
-Tagged releases are versioned automatically: pushing a `vX.Y.Z` tag makes CI run `scripts/build.ps1` with that version and upload the executable as the `Wakeboard-win-x64-vX.Y.Z` workflow artifact.
+Tagged releases are versioned automatically. Pushing a `vX.Y.Z` tag makes CI run `scripts/build.ps1` with that version, upload the executable as the `Wakeboard-win-x64-vX.Y.Z` workflow artifact, and publish a GitHub release for the tag with `Wakeboard.exe` attached. Tags carrying a prerelease suffix such as `v1.2.3-beta.1` are marked as prereleases. Downloading the executable from the releases page therefore does not require a GitHub login, unlike workflow artifacts.
 
 ## Install
 
