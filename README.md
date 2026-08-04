@@ -1,85 +1,102 @@
 # Wakeboard
 
-Wakeboard is a native Windows Wake-on-LAN dashboard packaged as one self-contained `Wakeboard.exe`. The executable contains the web UI, HTTP server, authentication, host storage, Windows adapter discovery, ICMP status checks, and UDP magic-packet sender.
+Wakeboard is a native Windows Wake-on-LAN dashboard packaged as a single self-contained `Wakeboard.exe`. It combines the responsive web UI, HTTP server, shared-password authentication, host storage, Windows adapter discovery, ICMP reachability checks, and UDP magic-packet sender.
 
-Saved devices can include a hostname or IPv4 address for a liveliness check. **Awake** means that target replied to ICMP. **No ping response** is deliberately inconclusive: a running computer can block ping through its firewall or network policy.
+The dashboard lets you:
 
-## Requirements
+- Add, edit, and remove wakeable devices.
+- Save a preferred Windows network adapter for each device.
+- Override the adapter for an individual wake request.
+- Check a saved IP address or hostname with ICMP when the page loads or on demand.
+- See whether packet transmission succeeded without implying that the target finished booting.
+
+An **Awake** status means the target replied to ICMP. **No ping response** is inconclusive because a running computer may block ICMP.
+
+## Runtime requirements
 
 - 64-bit Windows 10/11 or Windows Server
-- Administrator access for installation, firewall configuration, update, and removal
+- Administrator approval for installation, updates, firewall configuration, and removal
 - Wake-on-LAN enabled in each target computer's firmware, operating system, and network adapter
-- Target computers on a network where IPv4 directed broadcasts are permitted
-- A trusted private LAN; Wakeboard is not designed for direct internet exposure
+- An IPv4 network path that permits broadcasts between the Wakeboard computer and target devices
+- A trusted private LAN; Wakeboard is not intended for direct internet exposure
+
+The locally built executable is not code-signed, so Windows may display a reputation or SmartScreen warning.
 
 ## Build
 
-The build uses Docker only as a reproducible compiler. The resulting application has no Docker dependency.
+Building requires PowerShell and Docker Desktop or Docker Engine running Linux containers. The first build also needs internet access to download the Node and .NET SDK images and package dependencies.
+
+From the repository root:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\build.ps1
 ```
 
-The output is `artifacts\win-x64\Wakeboard.exe`. The build compiles the React UI, runs the .NET test suite, and cross-publishes a self-contained `win-x64` single-file application.
+The script compiles the React UI, runs the .NET tests, cross-publishes a self-contained `win-x64` application, and writes:
+
+```text
+artifacts\win-x64\Wakeboard.exe
+```
+
+The output directory is replaced on each build. Use `-Output <relative-path>` to select a different directory inside the repository.
 
 ## Install
 
-Run the built executable from this repository so the installer can migrate the existing `data\config.json` automatically:
+Run the built executable:
 
 ```powershell
 .\artifacts\win-x64\Wakeboard.exe install
 ```
 
-Windows will request administrator approval. The installer prompts for the shared dashboard password, installs an auto-starting Windows service under the low-privilege `LocalService` account, and permits the web port on Private Windows Firewall profiles. The default URL is:
+The executable requests administrator elevation and then:
 
-```text
-http://localhost:3001
-```
+1. Confirms that the selected TCP port is available.
+2. Prompts twice for a shared password of at least eight characters.
+3. Copies itself into `%ProgramData%\Wakeboard\bin`.
+4. Stores a PBKDF2 password hash and generated session secret with restricted permissions.
+5. Installs an automatically starting `Wakeboard` Windows service under `LocalService`.
+6. Adds the `Wakeboard web interface` inbound firewall rule for Private network profiles.
+7. Starts the service.
 
-To choose another port:
+The default dashboard URL is `http://localhost:3001`. To select another port:
 
 ```powershell
 .\artifacts\win-x64\Wakeboard.exe install --port 8080
 ```
 
-If the previous Docker application still owns the chosen port, stop/remove that old container first or select another port. The native installer removes the old `WakeboardWolHelper` Windows service after confirming that its web port is available.
+If the port is occupied, stop the process using it or choose another port. Other computers on the LAN can use `http://<wakeboard-computer-name>:<port>`. If Windows classifies the LAN as Public, change it to Private or deliberately adjust the firewall rule.
 
-Other computers on the LAN can browse to `http://<wakeboard-computer-name>:<port>`. If Windows classifies the LAN as Public, either change the network profile to Private or deliberately adjust the `Wakeboard web interface` firewall rule.
+### Existing data and password resets
+
+When installation is launched from a repository checkout, `data\config.json` is imported only if `%ProgramData%\Wakeboard\data\config.json` does not already exist. Existing ProgramData host configuration is never overwritten by that import.
+
+Running `install` again preserves the ProgramData host file but replaces the service settings, including the shared password and session secret. This is also the supported password-reset procedure. The installer removes the legacy `WakeboardWolHelper` service if it is present.
 
 ## Service commands
 
-Run these using any newly built/downloaded copy of `Wakeboard.exe`:
+| Command | Behavior |
+| --- | --- |
+| `Wakeboard.exe status` | Displays the Windows service state, local URL, and configuration path. |
+| `Wakeboard.exe update` | Replaces the installed executable and restarts the service while preserving settings and hosts. |
+| `Wakeboard.exe uninstall` | Removes the service, firewall rule, and installed executable while preserving settings and hosts. |
+| `Wakeboard.exe uninstall --purge` | Removes the service, firewall rule, executable, settings, and saved hosts. |
 
-```powershell
-# Show service state, local URL, and data path
-.\Wakeboard.exe status
+`install`, `update`, and `uninstall` request elevation automatically. Run `update` from a new external copy of `Wakeboard.exe`; the installed copy cannot replace itself. Removal is scheduled briefly after the command exits so Windows can release the running executable.
 
-# Replace the installed program while preserving settings and hosts
-.\Wakeboard.exe update
+## Persistence, backup, and restore
 
-# Remove the service and program but preserve settings/hosts
-.\Wakeboard.exe uninstall
-
-# Remove the service, program, settings, and all saved hosts
-.\Wakeboard.exe uninstall --purge
-```
-
-`install`, `update`, and `uninstall` request elevation automatically. For an update, do not run the copy already installed under `%ProgramData%`; run the new external executable.
-
-## Data and backups
-
-The single executable does not embed mutable state. Windows stores it separately so replacing the executable cannot erase it:
+Mutable state is kept outside the executable:
 
 ```text
-%ProgramData%\Wakeboard\settings.json    password hash, session secret, port
+%ProgramData%\Wakeboard\settings.json     password hash, session secret, port
 %ProgramData%\Wakeboard\data\config.json saved hosts
-%ProgramData%\Wakeboard\bin\Wakeboard.exe installed program
+%ProgramData%\Wakeboard\bin\Wakeboard.exe installed application
 ```
 
-Only the PBKDF2 password hash is stored. Host updates are serialized and `config.json` is replaced atomically. Invalid or unsupported configuration is reported rather than silently overwritten. One Wakeboard service should use a data directory at a time.
+The service serializes host mutations within the process and replaces `config.json` atomically. Invalid JSON, unsupported schema versions, and invalid host records are reported rather than silently replaced. Only one Wakeboard process should use a given data directory.
 
-To make a consistent backup, stop the service briefly and copy its data folder:
+To back up saved hosts consistently:
 
 ```powershell
 Stop-Service Wakeboard
@@ -87,27 +104,52 @@ Copy-Item -Recurse "$env:ProgramData\Wakeboard\data" ".\wakeboard-data-backup"
 Start-Service Wakeboard
 ```
 
-Restore by stopping the service, replacing `%ProgramData%\Wakeboard\data`, and starting it again. Local persistence survives browser refreshes, service restarts, Windows reboots, and executable updates, but it cannot protect against deletion, disk failure, or filesystem corruption; keep an external backup.
+Restore by stopping the service, replacing `%ProgramData%\Wakeboard\data`, and starting it again. Back up `settings.json` separately only if you also need to preserve the password and active session-signing secret; treat that file as sensitive.
 
-## Network behavior and troubleshooting
+ProgramData persistence survives page refreshes, service restarts, Windows reboots, reinstalls, and executable updates. It does not protect against accidental deletion, disk failure, or filesystem corruption.
 
-- The adapter list comes directly from active, non-loopback Windows IPv4 interfaces.
-- Wakeboard recalculates directed broadcast addresses from the selected adapter's current address and subnet mask on every request.
-- It binds UDP to that adapter and sends three standard magic packets to UDP port 9 per eligible IPv4 address.
-- A successful result means Windows accepted the transmissions; Wake-on-LAN has no acknowledgement and does not prove the target booted.
-- Windows Firewall or endpoint security must permit outbound UDP/9 and ICMP from the installed executable.
-- VPNs, Wi-Fi client isolation, VLAN boundaries, and routers that suppress broadcasts can block WoL. Select an adapter on the target computer's broadcast domain.
-- A target that does not answer ping may still be awake. Test its ICMP firewall policy before treating the status as authoritative.
-- The HTTP login is intended for a trusted LAN. The cookie is HTTP-only and same-site, and mutations require a same-origin request, but plain HTTP does not encrypt the password in transit.
+## Authentication and HTTP security
 
-For packet-level testing, capture traffic on the target LAN with Wireshark using `udp.port == 9`; a wake request should show three broadcasts containing six `FF` bytes followed by the target MAC repeated sixteen times.
+- The installer stores a salted PBKDF2-SHA256 password hash, never the plaintext password.
+- Successful login creates a signed, HTTP-only, same-site session cookie valid for 12 hours.
+- Login is limited to ten failed attempts per remote address in a rolling 15-minute window.
+- Every API endpoint except login and session inspection requires a valid session.
+- State-changing requests require a matching same-origin `Origin` header.
+- Plain HTTP does not encrypt the password or session in transit. Use Wakeboard only on a network you trust.
 
-## Development layout
+## Wake-on-LAN behavior
 
-- `ui/` — React/Vite browser interface
-- `src/Wakeboard.Server/` — embedded ASP.NET Core server, persistence, auth, networking, and service lifecycle
-- `tests/Wakeboard.Tests/` — unit tests
-- `build/Dockerfile` — build-only Linux container that cross-publishes the Windows executable
-- `scripts/build.ps1` — reproducible packaging entry point
+- Adapter discovery includes active, non-loopback Windows interfaces with a usable IPv4 address and subnet mask.
+- Windows adapter IDs are stored with hosts. If an adapter is removed or replaced, edit the host and select the new adapter.
+- Broadcast addresses are recalculated from the selected adapter's current IPv4 addresses and subnet masks for every wake request.
+- Wakeboard binds UDP sockets to the selected adapter and sends three standard magic packets to UDP port 9 for each eligible IPv4 address.
+- A successful response means Windows accepted the UDP transmissions. Wake-on-LAN has no acknowledgement and cannot confirm that the device booted.
 
-The browser API is session-protected: host CRUD, Windows interface discovery, wake requests, and per-host status checks. Password material and Windows networking remain entirely inside the native process.
+For packet-level testing, capture on the selected LAN adapter with Wireshark using the display filter `udp.port == 9`. Each standard magic packet contains six `FF` bytes followed by the target MAC address repeated sixteen times.
+
+## Reachability checks
+
+The optional check target accepts a hostname, IPv4 address, or IPv6 address without a URL scheme or path. Wakeboard sends one ICMP echo with a 1.5-second timeout when the dashboard loads, when the dashboard is refreshed, or when **Check now** is selected.
+
+DNS problems, host firewalls, endpoint security, sleeping network adapters, and network policy can all produce **No ping response**. Treat only a successful reply as definitive.
+
+## Troubleshooting
+
+- **The dashboard does not load:** run `Wakeboard.exe status`, confirm the reported service state, and check that the selected port is listening.
+- **LAN clients cannot connect:** verify the Windows network profile is Private and inspect the `Wakeboard web interface` firewall rule.
+- **No adapters appear:** confirm at least one non-loopback Windows adapter is active and has an IPv4 address and subnet mask.
+- **Packets send but the device stays off:** verify firmware and adapter WoL settings, the target MAC address, and that the chosen adapter shares the target's broadcast domain.
+- **Broadcasts are missing:** allow outbound UDP/9 from the installed executable and check for VPNs, VLAN boundaries, Wi-Fi client isolation, or network equipment that suppresses directed broadcasts.
+- **A saved adapter is unavailable:** edit the device and select its current Windows adapter.
+- **Configuration errors appear:** inspect `%ProgramData%\Wakeboard\data\config.json`; Wakeboard intentionally leaves malformed data untouched so it can be repaired or restored.
+
+## Repository layout
+
+- `ui/` - React and Vite browser interface
+- `src/Wakeboard.Server/` - ASP.NET Core server, persistence, authentication, Windows networking, and service lifecycle
+- `tests/Wakeboard.Tests/` - .NET unit tests
+- `build/Dockerfile` - reproducible build environment and Windows cross-publish pipeline
+- `scripts/build.ps1` - packaging entry point
+- `data/` - optional one-time import location for an existing `config.json`; runtime data lives in ProgramData
+
+The main browser routes cover login/logout, host CRUD, interface discovery, wake requests, and per-host status checks. Password material and Windows networking remain inside the service process.
