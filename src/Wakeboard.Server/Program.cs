@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net;
 using System.Reflection;
 using Microsoft.Extensions.FileProviders;
@@ -29,6 +28,8 @@ public static class Program
         builder.Services.AddSingleton<AuthService>();
         builder.Services.AddSingleton<ConfigStore>();
         builder.Services.AddSingleton<NetworkService>();
+        builder.Services.AddSingleton<PasskeyStore>();
+        builder.Services.AddSingleton<PasskeyService>();
         builder.Services.Configure<ForwardedHeadersOptions>(options =>
         {
             options.ForwardedHeaders = ForwardedHeaders.XForwardedHost | ForwardedHeaders.XForwardedProto;
@@ -39,7 +40,8 @@ public static class Program
         });
 
         var app = builder.Build();
-        var attempts = new ConcurrentDictionary<string, List<DateTimeOffset>>();
+        var loginLimiter = new LoginAttemptLimiter();
+        var preAuthPaths = new[] { "/api/auth/login", "/api/auth/session", "/api/auth/passkey/options", "/api/auth/passkey/verify" };
 
         app.UseForwardedHeaders();
         app.Use(async (context, next) =>
@@ -49,7 +51,7 @@ public static class Program
             {
                 await Results.Json(new { error = "Invalid request origin." }, statusCode: 403).ExecuteAsync(context); return;
             }
-            if (context.Request.Path == "/api/auth/login" || context.Request.Path == "/api/auth/session") { await next(); return; }
+            if (preAuthPaths.Any(path => context.Request.Path == path)) { await next(); return; }
             var auth = context.RequestServices.GetRequiredService<AuthService>();
             if (!auth.VerifySession(context.Request.Cookies[AuthService.CookieName]))
             {
@@ -62,15 +64,14 @@ public static class Program
         {
             var key = context.Connection.RemoteIpAddress?.ToString() ?? "local";
             var now = DateTimeOffset.UtcNow;
-            var recent = attempts.GetOrAdd(key, _ => []).Where(value => now - value < TimeSpan.FromMinutes(15)).ToList();
-            if (recent.Count >= 10) return Results.Json(new { error = "Too many attempts. Try again later." }, statusCode: 429);
+            if (loginLimiter.IsBlocked(key, now)) return Results.Json(new { error = "Too many attempts. Try again later." }, statusCode: 429);
             var input = await context.Request.ReadFromJsonAsync<LoginInput>();
             if (input?.Password is null || !auth.VerifyPassword(input.Password))
             {
-                recent.Add(now); attempts[key] = recent;
+                loginLimiter.RecordFailure(key, now);
                 return Results.Json(new { error = "Incorrect password." }, statusCode: 401);
             }
-            attempts.TryRemove(key, out _);
+            loginLimiter.Clear(key);
             context.Response.Cookies.Append(AuthService.CookieName, auth.CreateSession(now), auth.CookieOptions(context.Request.IsHttps));
             return Results.Ok(new { ok = true });
         });
@@ -79,7 +80,55 @@ public static class Program
             context.Response.Cookies.Delete(AuthService.CookieName, auth.CookieOptions(context.Request.IsHttps));
             return Results.Ok(new { ok = true });
         });
-        app.MapGet("/api/auth/session", (HttpContext context, AuthService auth) => Results.Ok(new { authenticated = auth.VerifySession(context.Request.Cookies[AuthService.CookieName]) }));
+        app.MapGet("/api/auth/session", async (HttpContext context, AuthService auth, PasskeyStore passkeyStore) =>
+        {
+            var authenticated = auth.VerifySession(context.Request.Cookies[AuthService.CookieName]);
+            var passkeyAvailable = PasskeyPolicy.IsEligibleOrigin(context.Request)
+                && (await passkeyStore.ListAsync(context.RequestAborted)).Any(item => item.RpId == PasskeyPolicy.DeriveRpId(context.Request));
+            return Results.Ok(new { authenticated, passkeyAvailable });
+        });
+
+        app.MapPost("/api/auth/passkey/options", async (HttpContext context, PasskeyService passkeys) =>
+        {
+            try { return Results.Ok(await passkeys.BeginLoginAsync(context.Request, context.RequestAborted)); }
+            catch (ArgumentException error) { return Results.Json(new { error = error.Message }, statusCode: 400); }
+            catch (KeyNotFoundException error) { return Results.Json(new { error = error.Message }, statusCode: 404); }
+        });
+        app.MapPost("/api/auth/passkey/verify", async (HttpContext context, AuthService auth, PasskeyService passkeys) =>
+        {
+            var key = context.Connection.RemoteIpAddress?.ToString() ?? "local";
+            var now = DateTimeOffset.UtcNow;
+            if (loginLimiter.IsBlocked(key, now)) return Results.Json(new { error = "Too many attempts. Try again later." }, statusCode: 429);
+            var input = await context.Request.ReadFromJsonAsync<PasskeyLoginVerifyInput>();
+            bool ok;
+            try { ok = input is not null && await passkeys.CompleteLoginAsync(context.Request, input.State, input.Assertion, context.RequestAborted); }
+            catch (ArgumentException error) { return Results.Json(new { error = error.Message }, statusCode: 400); }
+            if (!ok)
+            {
+                loginLimiter.RecordFailure(key, now);
+                return Results.Json(new { error = "Passkey sign-in failed." }, statusCode: 401);
+            }
+            loginLimiter.Clear(key);
+            context.Response.Cookies.Append(AuthService.CookieName, auth.CreateSession(now), auth.CookieOptions(context.Request.IsHttps));
+            return Results.Ok(new { ok = true });
+        });
+
+        app.MapPost("/api/passkeys/register/options", async (HttpContext context, PasskeyService passkeys) =>
+            await Api(async () => Results.Ok(await passkeys.BeginRegistrationAsync(context.Request, context.RequestAborted))));
+        app.MapPost("/api/passkeys/register/verify", async (HttpContext context, PasskeyService passkeys) => await Api(async () =>
+        {
+            var input = await context.Request.ReadFromJsonAsync<PasskeyRegisterVerifyInput>()
+                ?? throw new ArgumentException("Missing passkey registration payload.");
+            var credential = await passkeys.CompleteRegistrationAsync(context.Request, input.State, input.Attestation, input.Label, context.RequestAborted);
+            return Results.Json(PasskeyCredentialView.From(credential), statusCode: 201);
+        }));
+        app.MapGet("/api/passkeys", async (PasskeyStore passkeyStore, CancellationToken token) => await Api(async () =>
+            Results.Ok((await passkeyStore.ListAsync(token)).Select(PasskeyCredentialView.From))));
+        app.MapDelete("/api/passkeys/{id}", async (string id, PasskeyStore passkeyStore, CancellationToken token) => await Api(async () =>
+        {
+            await passkeyStore.DeleteAsync(id, token);
+            return Results.Ok(new { ok = true });
+        }));
 
         app.MapGet("/api/hosts", async (ConfigStore store, CancellationToken token) => await Api(async () => Results.Ok(await store.ListAsync(token))));
         app.MapPost("/api/hosts", async (HostInput input, ConfigStore store, CancellationToken token) => await Api(async () => Results.Json(await store.CreateAsync(input, token), statusCode: 201)));

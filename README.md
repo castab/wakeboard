@@ -174,7 +174,7 @@ Running `install` again preserves the ProgramData host file but replaces the ser
 Mutable state is kept outside the executable:
 
 ```text
-%ProgramData%\Wakeboard\settings.json     password hash, session secret, port
+%ProgramData%\Wakeboard\settings.json     password hash, session secret, port, registered passkeys
 %ProgramData%\Wakeboard\data\config.json saved hosts
 %ProgramData%\Wakeboard\bin\Wakeboard.exe installed application
 ```
@@ -201,6 +201,15 @@ ProgramData persistence survives page refreshes, service restarts, Windows reboo
 - Every API endpoint except login and session inspection requires a valid session.
 - State-changing requests require a matching same-origin `Origin` header.
 - Plain HTTP does not encrypt the password or session in transit. Use Wakeboard only on a network you trust.
+
+### Passkey sign-in
+
+Wakeboard can also authenticate with a passkey (Windows Hello, a phone, or a security key) as an alternative to the shared password. The password is never removed or disabled — a passkey is an additional way in, not a replacement.
+
+- Add a passkey from the **Passkeys** panel on the dashboard after signing in with the password. The first passkey has to be registered from an already-authenticated session; there is no separate enrollment flow.
+- Passkeys only work over a secure WebAuthn origin: `http://localhost:<port>` on the Wakeboard computer itself, or the `https://<computer>.<tailnet>.ts.net` URL from [Tailscale Serve HTTPS](#tailscale-serve-https). They are **not available** over plain `http://<computer-name>:<port>` on the LAN (no TLS) or over `http://127.0.0.1:<port>` (an IP address cannot be a WebAuthn identity). The dashboard explains this in place of the **Add a passkey** control when the current address doesn't qualify.
+- A passkey is tied to the exact address it was registered under. One added while browsing `http://localhost:3000` will not be offered when signing in from the tailnet HTTPS URL, and vice versa — register one from each address you actually use. The shared password always works from every address.
+- Remove a passkey at any time from the same panel. Removing the last one is not a lockout risk; the shared password remains available.
 
 ## Wake-on-LAN behavior
 

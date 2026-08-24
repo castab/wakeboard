@@ -32,6 +32,31 @@ public sealed class AuthService(AppSettings settings)
         Path = "/", MaxAge = SessionLifetime, IsEssential = true
     };
 
+    public string SignState(string purpose, string payload, TimeSpan lifetime, DateTimeOffset? now = null)
+    {
+        var expires = (now ?? DateTimeOffset.UtcNow).Add(lifetime).ToUnixTimeSeconds().ToString();
+        var encodedPayload = Convert.ToBase64String(Encoding.UTF8.GetBytes(payload)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return $"{expires}.{encodedPayload}.{Sign($"{purpose}.{expires}.{encodedPayload}")}";
+    }
+
+    public bool TryVerifyState(string purpose, string? token, out string? payload, DateTimeOffset? now = null)
+    {
+        payload = null;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        var parts = token.Split('.');
+        if (parts.Length != 3 || !long.TryParse(parts[0], out var expires) || expires <= (now ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds()) return false;
+        var expected = Encoding.ASCII.GetBytes(Sign($"{purpose}.{parts[0]}.{parts[1]}"));
+        var actual = Encoding.ASCII.GetBytes(parts[2]);
+        if (actual.Length != expected.Length || !CryptographicOperations.FixedTimeEquals(actual, expected)) return false;
+        try
+        {
+            var padded = parts[1].Replace('-', '+').Replace('_', '/').PadRight(parts[1].Length + (4 - parts[1].Length % 4) % 4, '=');
+            payload = Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+            return true;
+        }
+        catch (FormatException) { return false; }
+    }
+
     private string Sign(string value)
     {
         using var hmac = new HMACSHA256(Convert.FromBase64String(settings.SessionSecret));

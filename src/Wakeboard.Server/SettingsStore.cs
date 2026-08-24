@@ -15,13 +15,24 @@ public static class SettingsStore
             ?? throw new InvalidDataException("settings.json is empty or invalid.");
         if (settings.Port is < 1 or > 65535 || settings.SessionSecret.Length < 32 || string.IsNullOrWhiteSpace(settings.PasswordHash))
             throw new InvalidDataException("settings.json contains invalid values.");
+        settings.Passkeys ??= [];
         return settings;
     }
 
     public static void Save(AppPaths paths, AppSettings settings)
     {
         Directory.CreateDirectory(paths.Root);
-        File.WriteAllText(paths.SettingsFile, JsonSerializer.Serialize(settings, JsonOptions));
+        var temporary = Path.Combine(paths.Root, $"settings.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, settings, JsonOptions);
+                stream.Flush(true);
+            }
+            File.Move(temporary, paths.SettingsFile, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     public static string HashPassword(string password, int iterations = 310_000)
