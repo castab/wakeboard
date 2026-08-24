@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 interface WakeHost { id: string; name: string; macAddress: string; preferredInterfaceId: string; checkTarget: string }
+interface PasskeyView { id: string; label: string; rpId: string; createdAt: string; lastUsedAt: string | null }
 interface AdapterAddress { address: string; subnetMask: string; broadcastAddress: string }
 interface NetworkAdapter { id: string; name: string; description: string; addresses: AdapterAddress[] }
 interface LivenessResult { target: string; reachable: boolean; roundTripTimeMs: number | null; address: string | null; message: string; checkedAt: string }
@@ -24,23 +25,56 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error(response.status === 401 ? "AUTH_REQUIRED" : payload.error || `Request failed (${response.status}).`);
   return payload as T;
 }
-function Login({ onLogin }: { onLogin: () => void }) {
+
+function passkeySupported() {
+  const ctor = (window as unknown as { PublicKeyCredential?: typeof PublicKeyCredential }).PublicKeyCredential;
+  return typeof ctor?.parseRequestOptionsFromJSON === "function" && typeof ctor?.parseCreationOptionsFromJSON === "function";
+}
+function passkeyOriginEligible() {
+  return window.isSecureContext && (location.hostname === "localhost" || location.protocol === "https:");
+}
+function humanizePasskeyError(reason: unknown): string {
+  if (reason instanceof DOMException && reason.name === "NotAllowedError") return "Passkey action was cancelled or timed out.";
+  return reason instanceof Error ? reason.message : "Passkey action failed.";
+}
+
+function Login({ onLogin, passkeyAvailable }: { onLogin: () => void; passkeyAvailable: boolean }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyError, setPasskeyError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try { await request("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }); onLogin(); }
     catch (reason) { setError((reason as Error).message); }
     finally { setBusy(false); }
   }
+  async function signInWithPasskey() {
+    setPasskeyBusy(true); setPasskeyError("");
+    try {
+      const { options, state } = await request<{ options: PublicKeyCredentialRequestOptionsJSON; state: string }>("/api/auth/passkey/options", { method: "POST", body: "{}" });
+      const credential = await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options) }) as PublicKeyCredential | null;
+      if (!credential) throw new Error("Passkey sign-in was cancelled.");
+      await request("/api/auth/passkey/verify", { method: "POST", body: JSON.stringify({ state, assertion: credential.toJSON() }) });
+      onLogin();
+    } catch (reason) { setPasskeyError(humanizePasskeyError(reason)); }
+    finally { setPasskeyBusy(false); }
+  }
+  const showPasskey = passkeyAvailable && passkeySupported();
   return <main className="login-shell"><section className="login-panel">
     <div className="brand-mark" aria-hidden="true">⌁</div><p className="eyebrow">Local network console</p><h1>Wakeboard</h1>
     <p className="lede">Sign in to wake and monitor devices on your network.</p>
     <form onSubmit={submit} className="login-form"><label htmlFor="password">Shared password</label>
       <input id="password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required autoFocus />
       {error && <p className="form-error" role="alert">{error}</p>}<button className="button primary wide" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-    </form></section><AppFooter /></main>;
+    </form>
+    {showPasskey && <div className="login-passkey">
+      <div className="divider" role="separator"><span>or</span></div>
+      <button type="button" className="button ghost wide" onClick={() => void signInWithPasskey()} disabled={passkeyBusy}>{passkeyBusy ? "Waiting for passkey…" : "Sign in with a passkey"}</button>
+      {passkeyError && <p className="form-error" role="alert">{passkeyError}</p>}
+    </div>}
+  </section><AppFooter /></main>;
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
@@ -54,7 +88,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [helperError, setHelperError] = useState("");
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [busyKey, setBusyKey] = useState("");
+  const [passkeys, setPasskeys] = useState<PasskeyView[]>([]);
+  const [passkeyLabel, setPasskeyLabel] = useState("");
+  const [passkeyBusyKey, setPasskeyBusyKey] = useState("");
   const adapterMap = useMemo(() => new Map(adapters.map(adapter => [adapter.id, adapter])), [adapters]);
+  const passkeyEligible = useMemo(() => passkeyOriginEligible() && passkeySupported(), []);
 
   const handleError = useCallback((reason: unknown) => {
     if ((reason as Error).message === "AUTH_REQUIRED") { onLogout(); return; }
@@ -75,11 +113,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [hostResult, adapterResult] = await Promise.allSettled([request<WakeHost[]>("/api/hosts"), request<NetworkAdapter[]>("/api/interfaces")]);
+    const [hostResult, adapterResult, passkeyResult] = await Promise.allSettled([
+      request<WakeHost[]>("/api/hosts"), request<NetworkAdapter[]>("/api/interfaces"), request<PasskeyView[]>("/api/passkeys"),
+    ]);
     if (hostResult.status === "fulfilled") { setHosts(hostResult.value); for (const host of hostResult.value) if (host.checkTarget) void checkHost(host); }
     else handleError(hostResult.reason);
     if (adapterResult.status === "fulfilled") { setAdapters(adapterResult.value); setHelperError(""); }
     else { setAdapters([]); setHelperError((adapterResult.reason as Error).message); }
+    if (passkeyResult.status === "fulfilled") setPasskeys(passkeyResult.value);
+    else handleError(passkeyResult.reason);
     setLoading(false);
   }, [checkHost, handleError]);
 
@@ -109,6 +151,32 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   }
   async function logout() { try { await request("/api/auth/logout", { method: "POST", body: "{}" }); } finally { onLogout(); } }
 
+  async function addPasskey() {
+    setPasskeyBusyKey("add"); setNotice(null);
+    try {
+      const { options, state } = await request<{ options: PublicKeyCredentialCreationOptionsJSON; state: string }>("/api/passkeys/register/options", { method: "POST", body: "{}" });
+      const credential = await navigator.credentials.create({ publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(options) }) as PublicKeyCredential | null;
+      if (!credential) throw new Error("Passkey creation was cancelled.");
+      const label = passkeyLabel.trim() || `Passkey added ${new Date().toLocaleDateString()}`;
+      await request("/api/passkeys/register/verify", { method: "POST", body: JSON.stringify({ state, attestation: credential.toJSON(), label }) });
+      setPasskeyLabel("");
+      setPasskeys(await request<PasskeyView[]>("/api/passkeys"));
+      setNotice({ kind: "success", text: "Passkey added." });
+    } catch (reason) {
+      if ((reason as Error).message === "AUTH_REQUIRED") onLogout();
+      else setNotice({ kind: "error", text: humanizePasskeyError(reason) });
+    } finally { setPasskeyBusyKey(""); }
+  }
+  async function removePasskey(passkey: PasskeyView) {
+    if (!confirm(`Remove "${passkey.label}"? This cannot be undone.`)) return;
+    setPasskeyBusyKey(`delete:${passkey.id}`);
+    try {
+      await request(`/api/passkeys/${encodeURIComponent(passkey.id)}`, { method: "DELETE" });
+      setPasskeys(items => items.filter(item => item.id !== passkey.id));
+      setNotice({ kind: "success", text: "Passkey removed." });
+    } catch (reason) { handleError(reason); } finally { setPasskeyBusyKey(""); }
+  }
+
   return <main className="app-shell">
     <header className="topbar"><div><p className="eyebrow">Native Windows console</p><h1>Wakeboard</h1></div><button className="button ghost" onClick={logout}>Sign out</button></header>
     {notice && <div className={`notice ${notice.kind}`} role="status">{notice.text}<button onClick={() => setNotice(null)} aria-label="Dismiss">×</button></div>}
@@ -133,13 +201,28 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           <div className="card-actions"><button onClick={() => beginEdit(host)}>Edit</button><button className="danger-link" onClick={() => void removeHost(host)} disabled={busyKey === `delete:${host.id}`}>Remove</button></div>
         </article>;
       })}</div>}
+    </section>
+    <section className="passkeys-section"><div className="section-heading"><div><p className="eyebrow">Security</p><h2>Passkeys</h2></div></div>
+      {!passkeys.length ? <div className="empty-state"><strong>No passkeys yet.</strong><span>Add one below to sign in without typing the shared password.</span></div> : <ul className="passkey-list">{passkeys.map(passkey =>
+        <li className="passkey-row" key={passkey.id}><div><strong>{passkey.label}</strong><small>{passkey.rpId} · added {new Date(passkey.createdAt).toLocaleDateString()}{passkey.lastUsedAt ? ` · last used ${new Date(passkey.lastUsedAt).toLocaleDateString()}` : ""}</small></div>
+          <button className="danger-link" onClick={() => void removePasskey(passkey)} disabled={passkeyBusyKey === `delete:${passkey.id}`}>Remove</button>
+        </li>)}</ul>}
+      {passkeyEligible ? <div className="passkey-add">
+        <label>Label <span className="optional">Optional</span><input value={passkeyLabel} maxLength={100} onChange={event => setPasskeyLabel(event.target.value)} placeholder={`Passkey added ${new Date().toLocaleDateString()}`} /></label>
+        <button className="button" onClick={() => void addPasskey()} disabled={passkeyBusyKey === "add"}>{passkeyBusyKey === "add" ? "Adding…" : "Add a passkey"}</button>
+      </div> : <div className="helper-warning"><strong>Passkeys aren't available here.</strong> Passkeys need HTTPS or http://localhost — you're on {location.hostname} right now. Open Wakeboard via the Tailscale HTTPS link or http://localhost to add one.</div>}
     </section><AppFooter />
   </main>;
 }
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  useEffect(() => { void request<{ authenticated: boolean }>("/api/auth/session").then(result => setAuthenticated(result.authenticated)).catch(() => setAuthenticated(false)); }, []);
+  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+  useEffect(() => {
+    void request<{ authenticated: boolean; passkeyAvailable: boolean }>("/api/auth/session")
+      .then(result => { setAuthenticated(result.authenticated); setPasskeyAvailable(result.passkeyAvailable); })
+      .catch(() => setAuthenticated(false));
+  }, []);
   if (authenticated === null) return <main className="splash"><div className="splash-body"><div className="brand-mark">⌁</div><span>Loading Wakeboard…</span></div><AppFooter /></main>;
-  return authenticated ? <Dashboard onLogout={() => setAuthenticated(false)} /> : <Login onLogin={() => setAuthenticated(true)} />;
+  return authenticated ? <Dashboard onLogout={() => setAuthenticated(false)} /> : <Login onLogin={() => setAuthenticated(true)} passkeyAvailable={passkeyAvailable} />;
 }
